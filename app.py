@@ -1,5 +1,7 @@
+import html
 import io
 import json
+import logging
 import os
 import time
 from datetime import datetime
@@ -8,7 +10,33 @@ from typing import List, Optional
 import requests
 import streamlit as st
 from fpdf import FPDF
-from pydantic import BaseModel, Field
+from fpdf.enums import XPos, YPos
+from pydantic import BaseModel, Field, field_validator
+
+# ---------------------------------------------------------
+# Logging Configuration
+# ---------------------------------------------------------
+logger = logging.getLogger("FirstGigAI")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+# ---------------------------------------------------------
+# Security & Helper Utilities
+# ---------------------------------------------------------
+def safe_html(val: Optional[str]) -> str:
+    """Escapes HTML entities from untrusted dynamic text before rendering."""
+    if val is None:
+        return ""
+    return html.escape(str(val))
+
+
+def sanitize_input(text: Optional[str], max_len: int = 500) -> str:
+    """Sanitizes user input by stripping whitespace and truncating to max_len."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    return cleaned[:max_len]
+
 
 # ---------------------------------------------------------
 # Streamlit Page Configuration
@@ -21,7 +49,7 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Custom Modern CSS
+# Custom Modern CSS (Static & Safe)
 # ---------------------------------------------------------
 CUSTOM_CSS = """
 <style>
@@ -62,10 +90,6 @@ code, pre { font-family: 'JetBrains Mono', monospace !important; }
 .rate-value { font-size: 1.6rem; font-weight: 800; color: #38bdf8; margin: 8px 0; }
 .rate-label { font-size: 0.8rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; }
 
-.platform-card {
-    background: rgba(30,41,59,0.85); border: 1px solid rgba(148,163,184,0.12);
-    border-radius: 12px; padding: 20px; margin-bottom: 16px;
-}
 .platform-badge {
     display: inline-block; padding: 3px 10px; border-radius: 9999px;
     font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
@@ -93,98 +117,167 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------
-# Pydantic Schemas
+# Pydantic Schemas with Strict Validation
 # ---------------------------------------------------------
 class MicroService(BaseModel):
-    title: str = Field(description="Action-oriented title of the micro-service")
-    tagline: str = Field(description="One-line pitch focused on client ROI")
-    target_client: str = Field(description="Specific ideal client persona who has money to spend")
-    deliverables: List[str] = Field(description="3 to 4 concrete bullet deliverables")
-    turnaround: str = Field(description="Estimated turnaround, e.g., '48 Hours' or '3-5 Days'")
+    title: str = Field(min_length=3, max_length=150, description="Action-oriented title of the micro-service")
+    tagline: str = Field(min_length=5, max_length=250, description="One-line pitch focused on client ROI")
+    target_client: str = Field(min_length=5, max_length=250, description="Specific ideal client persona who has money to spend")
+    deliverables: List[str] = Field(min_length=2, description="Concrete bullet deliverables")
+    turnaround: str = Field(min_length=2, max_length=50, description="Estimated turnaround time")
+
+    @field_validator("title", "tagline", "target_client", "turnaround")
+    @classmethod
+    def strip_and_validate_nonempty(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("Field cannot be empty or pure whitespace")
+        return s
+
+    @field_validator("deliverables")
+    @classmethod
+    def validate_deliverables(cls, v: List[str]) -> List[str]:
+        cleaned = [d.strip() for d in v if d and d.strip()]
+        if len(cleaned) < 2:
+            raise ValueError("Must provide at least 2 non-empty deliverables")
+        return cleaned
+
 
 class PricingTier(BaseModel):
-    tier_name: str = Field(description="Starter, Standard, or Retainer tier name")
-    price: str = Field(description="Suggested price or price range in selected currency")
-    scope: str = Field(description="Clear scope definition for this tier")
-    ideal_for: str = Field(description="Who should buy this tier")
+    tier_name: str = Field(min_length=2, max_length=80, description="Tier name")
+    price: str = Field(min_length=1, max_length=60, description="Suggested price or price range")
+    scope: str = Field(min_length=5, max_length=300, description="Clear scope definition for this tier")
+    ideal_for: str = Field(min_length=5, max_length=250, description="Who should buy this tier")
+
+    @field_validator("tier_name", "price", "scope", "ideal_for")
+    @classmethod
+    def strip_and_validate(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("Pricing fields cannot be empty")
+        return s
+
 
 class OutreachScript(BaseModel):
-    channel: str = Field(description="e.g. Cold Email or LinkedIn Direct Message")
-    subject_line: str = Field(description="High-open rate subject line")
-    body: str = Field(description="Concise, non-salesy outreach pitch focusing on value")
-    follow_up: str = Field(description="Polite 3-day follow-up message")
+    channel: str = Field(min_length=2, max_length=80, description="Outreach channel")
+    subject_line: str = Field(min_length=3, max_length=150, description="Subject line")
+    body: str = Field(min_length=10, max_length=2000, description="Concise value-focused outreach message")
+    follow_up: str = Field(min_length=10, max_length=1000, description="Polite 3-day follow-up message")
+
+    @field_validator("channel", "subject_line", "body", "follow_up")
+    @classmethod
+    def strip_and_validate(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("Outreach fields cannot be empty")
+        return s
+
 
 class FreelanceProposal(BaseModel):
-    headline: str = Field(description="Winning proposal opening headline")
-    problem_statement: str = Field(description="Empathy-driven summary of the client's current pain point")
-    proposed_solution: str = Field(description="Step-by-step roadmap showing how you deliver results")
-    why_me: str = Field(description="Highlight of unique blend of technical and soft skills")
-    call_to_action: str = Field(description="Low-friction next step to schedule a quick chat")
+    headline: str = Field(min_length=5, max_length=150, description="Proposal headline")
+    problem_statement: str = Field(min_length=10, max_length=1500, description="Summary of client's pain point")
+    proposed_solution: str = Field(min_length=10, max_length=2500, description="Step-by-step roadmap")
+    why_me: str = Field(min_length=10, max_length=1500, description="Unique skills and reliability highlight")
+    call_to_action: str = Field(min_length=5, max_length=500, description="Low-friction next step")
+
+    @field_validator("headline", "problem_statement", "proposed_solution", "why_me", "call_to_action")
+    @classmethod
+    def strip_and_validate(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("Proposal fields cannot be empty")
+        return s
+
 
 class FirstGigOutput(BaseModel):
-    summary: str = Field(description="Strategic summary of this freelance niche")
-    services: List[MicroService] = Field(description="Exactly 3 micro-services")
-    pricing: List[PricingTier] = Field(description="Exactly 3 pricing tiers")
+    summary: str = Field(min_length=10, max_length=1000, description="Strategic positioning summary")
+    services: List[MicroService] = Field(min_length=3, max_length=3, description="Exactly 3 micro-services")
+    pricing: List[PricingTier] = Field(min_length=3, max_length=3, description="Exactly 3 pricing tiers")
     outreach: OutreachScript = Field(description="Cold outreach templates")
     proposal: FreelanceProposal = Field(description="Ready-to-use client proposal")
+    is_fallback: bool = Field(default=False, description="Flag indicating deterministic demo/fallback generation")
+    created_at: str = Field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("Summary cannot be empty")
+        return s
 
 
 # ---------------------------------------------------------
-# Ollama Connectivity
+# Ollama Connectivity & Configuration
 # ---------------------------------------------------------
-def check_ollama_status(host: str):
+DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"))
+DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma2:2b")
+
+
+def check_ollama_status(host: str, timeout: float = 2.0):
+    """Checks if Ollama is running and retrieves the list of installed models."""
     try:
-        resp = requests.get(f"{host.rstrip('/')}/api/tags", timeout=1.5)
+        clean_host = host.rstrip("/")
+        resp = requests.get(f"{clean_host}/api/tags", timeout=timeout)
         if resp.status_code == 200:
-            models = [m.get("name") for m in resp.json().get("models", [])]
+            models = [m.get("name") for m in resp.json().get("models", []) if m.get("name")]
             return True, models, None
         return False, [], f"HTTP {resp.status_code}"
     except Exception as e:
-        return False, [], str(e)
+        logger.debug("Ollama connectivity check failed: %s", e)
+        return False, [], "Connection failed"
 
 
 # ---------------------------------------------------------
-# Fallback Data Generator
+# Deterministic Fallback Data Generator (Demo Mode)
 # ---------------------------------------------------------
 def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, currency: str) -> FirstGigOutput:
+    """
+    Generates realistic, grounded demo output without AI inference.
+    Contains no fabricated metrics, unverified guarantees, or arbitrary SLAs.
+    """
     sym = "$" if "$" in currency else ("€" if "EUR" in currency else ("₹" if "INR" in currency else "£"))
-    primary = tech_skills.split(",")[0].strip()
+    primary = tech_skills.split(",")[0].strip() if tech_skills else "Technical"
+
     return FirstGigOutput(
-        summary=f"Specialized freelance positioning combining '{tech_skills}' with '{soft_skills}' targeting the '{niche}' market.",
+        summary=(
+            f"Specialized freelance positioning combining {primary} capabilities with {soft_skills} "
+            f"to solve high-value operational bottlenecks for {niche} businesses."
+        ),
         services=[
             MicroService(
-                title=f"{primary} Rapid Implementation & Audit",
-                tagline="Plug immediate operational leaks with a streamlined 48-hour technical sprint.",
-                target_client=f"Busy founders & operators in {niche} lacking in-house technical bandwidth.",
+                title=f"{primary} Health Audit & Rapid Implementation",
+                tagline="Identify technical debt and implement immediate high-priority fixes within 48-72 hours.",
+                target_client=f"Founders, operators, and engineering leads in {niche} needing focused technical support.",
                 deliverables=[
-                    "Comprehensive codebase / workflow health audit report",
-                    "Implementation of top 3 high-impact fixes or automation scripts",
-                    "Recorded Loom video walkthrough explaining every change in plain English",
-                    "7 days of post-handoff support & direct Slack/WhatsApp access"
+                    "Comprehensive workflow/codebase audit report detailing top vulnerabilities & bottlenecks",
+                    "Implementation of up to 3 prioritized fixes, refactors, or automation scripts",
+                    "Clear video walkthrough explaining all changes and technical decisions",
+                    "7-day post-handoff support window for questions and minor adjustments"
                 ],
                 turnaround="48 - 72 Hours"
             ),
             MicroService(
-                title=f"Custom {niche} Workflow Automation & Tooling",
-                tagline="Save 10+ hours per week by connecting fragmented tools into an automated pipeline.",
-                target_client=f"Growing businesses in {niche} overwhelmed by repetitive manual tasks.",
+                title=f"Custom {niche} Workflow Automation Pipeline",
+                tagline="Eliminate repetitive manual data entry and streamline team operations with custom tooling.",
+                target_client=f"Growing {niche} teams managing fragmented tools and repetitive manual processes.",
                 deliverables=[
-                    "Custom integration script / micro-dashboard tailored to business needs",
-                    "Error logging and automatic alert notifications",
-                    "Standard Operating Procedure (SOP) documentation for team onboarding",
-                    "1-on-1 handover coaching call"
+                    "Custom integration script or lightweight automation tool connecting your daily workflows",
+                    "Structured error logging and real-time failure notification alerts",
+                    "Standard Operating Procedure (SOP) documentation for seamless team adoption",
+                    "Handover walk-through session to review operation and maintenance"
                 ],
                 turnaround="4 - 5 Days"
             ),
             MicroService(
-                title="Performance Optimization & Reliability Retainer",
-                tagline="Continuous peace of mind and priority troubleshooting for mission-critical systems.",
+                title="Continuous Maintenance & Technical Retainer",
+                tagline="Dedicated ongoing support, preventive maintenance, and steady feature improvements.",
                 target_client=f"Established teams in {niche} seeking a dependable fractional technical partner.",
                 deliverables=[
-                    "Bi-weekly performance checks and preventive maintenance",
-                    "Guaranteed 4-hour emergency response SLA",
+                    "Bi-weekly system health checks, dependency updates, and preventive maintenance",
+                    "Priority bug resolution during standard business hours",
                     "Continuous feature enhancements (up to 10 hours/month)",
-                    "Monthly ROI & optimization strategy report"
+                    "Monthly status summary covering completed tasks and upcoming recommendations"
                 ],
                 turnaround="Monthly Ongoing"
             )
@@ -192,9 +285,9 @@ def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, curre
         pricing=[
             PricingTier(
                 tier_name="Starter Sprint",
-                price=f"{sym}150 - {sym}300",
-                scope="Low friction foot-in-the-door technical audit and quick-win deliverable.",
-                ideal_for="First-time clients who want to verify work quality with zero risk."
+                price=f"{sym}150 - {sym}350",
+                scope="Focused entry-level audit and high-impact initial deliverable.",
+                ideal_for="First-time clients seeking to validate quality on a scoped problem."
             ),
             PricingTier(
                 tier_name="Full Implementation (Recommended)",
@@ -205,8 +298,8 @@ def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, curre
             PricingTier(
                 tier_name="Growth Retainer",
                 price=f"{sym}450 - {sym}1,200/mo",
-                scope="Ongoing fractional support, priority updates, and automated maintenance.",
-                ideal_for="Long-term clients seeking predictable monthly support."
+                scope="Ongoing fractional technical support, scheduled reviews, and routine maintenance.",
+                ideal_for="Long-term clients seeking predictable monthly technical bandwidth."
             )
         ],
         outreach=OutreachScript(
@@ -214,113 +307,157 @@ def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, curre
             subject_line=f"Quick idea regarding {niche} automation (not a sales pitch)",
             body=(
                 f"Hi {{FirstName}},\n\n"
-                f"I noticed how {{CompanyName}} is scaling within the {niche} space—congrats on the recent momentum!\n\n"
+                f"I noticed how {{CompanyName}} is scaling within the {niche} space—congratulations on your progress.\n\n"
                 f"I put together a quick observation on how you can leverage {primary} "
                 f"to eliminate repetitive bottleneck tasks and improve speed.\n\n"
                 f"Mind if I send over a 2-minute video walkthrough? No pressure at all.\n\n"
                 f"Best regards,\n{{YourName}}\nFreelance Specialist"
             ),
             follow_up=(
-                f"Hi {{FirstName}},\n\nQuick bump on this — completely understand if timing is off.\n\n"
+                f"Hi {{FirstName}},\n\nQuick follow-up on this—completely understand if timing is not right currently.\n\n"
                 f"Here is a 1-page summary for your team: [Link]\n\nBest,\n{{YourName}}"
             )
         ),
         proposal=FreelanceProposal(
             headline=f"Turnkey {primary} Solution Tailored for {{ClientName}}",
             problem_statement=(
-                f"{{ClientName}} needs a dependable solution to automate and modernize processes in {niche} "
+                f"{{ClientName}} requires a dependable, modern solution to streamline key processes in {niche} "
                 f"without ballooning overhead or hiring full-time engineering staff."
             ),
             proposed_solution=(
                 "Phase 1: Discovery & Requirements Lock (Day 1)\n"
                 "Phase 2: Core Development & Modular Testing (Days 2-3)\n"
                 "Phase 3: Integration, Client Review & Revisions (Day 4)\n"
-                "Phase 4: Handoff, Video Walkthrough & 7-Day Guarantee (Day 5)"
+                "Phase 4: Handoff, Documentation Walkthrough & 7-Day Support Window (Day 5)"
             ),
             why_me=(
                 f"I combine technical precision in {tech_skills} with strong {soft_skills}. "
                 f"I ensure clear communication, on-time delivery, and complete visibility at every milestone."
             ),
             call_to_action=(
-                "Are you available for a 15-minute alignment call tomorrow or Thursday to finalize scope? "
-                "Looking forward to helping you launch this smoothly!"
+                "Are you available for a brief 15-minute alignment call tomorrow or Thursday to finalize scope? "
+                "Looking forward to helping you launch this smoothly."
             )
-        )
+        ),
+        is_fallback=True
     )
 
 
 # ---------------------------------------------------------
-# Ollama Query
+# Ollama Query with Retry and Strict Validation
 # ---------------------------------------------------------
+def _clean_json_markdown(content: str) -> str:
+    """Removes markdown code fences from JSON output."""
+    s = content.strip()
+    if s.startswith("```json"):
+        s = s[7:]
+    elif s.startswith("```"):
+        s = s[3:]
+    if s.endswith("```"):
+        s = s[:-3]
+    return s.strip()
+
+
 def query_ollama_for_firstgig(
-    host: str, model: str, tech_skills: str, soft_skills: str,
-    niche: str, exp_level: str, currency: str, temperature: float = 0.5
+    host: str,
+    model: str,
+    tech_skills: str,
+    soft_skills: str,
+    niche: str,
+    exp_level: str,
+    currency: str,
+    temperature: float = 0.4,
+    timeout: int = 120
 ) -> FirstGigOutput:
-    prompt = f"""You are FirstGig AI, an elite freelance career strategist.
-Turn the user's skills into 3 realistic micro-services, starter pricing, an outreach script, and a client proposal.
+    """
+    Queries Ollama to generate structured FirstGigOutput.
+    Includes strict grounding rules, JSON enforcement, and a 1-time automatic retry.
+    """
+    clean_host = host.rstrip("/")
 
-USER PROFILE:
-- Technical Skills: {tech_skills}
-- Soft Skills: {soft_skills}
-- Target Niche: {niche}
-- Experience Level: {exp_level}
-- Pricing Currency: {currency}
-
-Respond with VALID JSON ONLY:
-{{
-  "summary": "2-sentence positioning strategy",
-  "services": [
-    {{"title":"...","tagline":"...","target_client":"...","deliverables":["...","...","..."],"turnaround":"..."}}
-  ],
-  "pricing": [
-    {{"tier_name":"...","price":"...","scope":"...","ideal_for":"..."}}
-  ],
-  "outreach": {{"channel":"...","subject_line":"...","body":"...","follow_up":"..."}},
-  "proposal": {{"headline":"...","problem_statement":"...","proposed_solution":"...","why_me":"...","call_to_action":"..."}}
-}}
-
-Rules: exactly 3 services, exactly 3 pricing tiers. Keep descriptions concise (1-2 sentences). No markdown, no extra text. Return only raw JSON."""
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "Return strictly valid JSON only, no markdown, no commentary."},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False,
-        "format": "json",
-        "options": {"temperature": temperature, "num_predict": 1200, "num_ctx": 2048}
-    }
-    resp = requests.post(
-        f"{host.rstrip('/')}/api/chat",
-        headers={"Content-Type": "application/json"},
-        json=payload, timeout=180
+    prompt_instructions = (
+        "You are FirstGig AI, an elite freelance career strategist.\n"
+        "Convert the user's provided skills into 3 realistic micro-services, starter pricing, an outreach script, and a client proposal.\n\n"
+        "GROUNDING RULES:\n"
+        "- Propose ONLY services directly deliverable using the user's provided technical skills.\n"
+        "- Do NOT invent certifications, fake client logos, or guaranteed financial returns/arbitrary SLAs.\n"
+        "- Deliverables must be realistic, concrete, and grounded in standard freelance practice.\n\n"
+        f"USER PROFILE:\n"
+        f"- Technical Skills: {tech_skills}\n"
+        f"- Soft Skills: {soft_skills}\n"
+        f"- Target Niche: {niche}\n"
+        f"- Experience Level: {exp_level}\n"
+        f"- Pricing Currency: {currency}\n\n"
+        "SCHEMA REQUIREMENTS (Respond with VALID JSON ONLY):\n"
+        "{\n"
+        '  "summary": "2-sentence positioning strategy",\n'
+        '  "services": [\n'
+        '    {"title":"...","tagline":"...","target_client":"...","deliverables":["...","...","..."],"turnaround":"..."}\n'
+        "  ],\n"
+        '  "pricing": [\n'
+        '    {"tier_name":"...","price":"...","scope":"...","ideal_for":"..."}\n'
+        "  ],\n"
+        '  "outreach": {"channel":"...","subject_line":"...","body":"...","follow_up":"..."},\n'
+        '  "proposal": {"headline":"...","problem_statement":"...","proposed_solution":"...","why_me":"...","call_to_action":"..."}\n'
+        "}\n\n"
+        "CRITICAL RULES: Exactly 3 services, exactly 3 pricing tiers. Deliverables must be a list of at least 2 bullet strings. Return raw JSON only."
     )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Ollama returned HTTP {resp.status_code}: {resp.text}")
 
-    content = resp.json().get("message", {}).get("content", "").strip()
-    for marker in ["```json", "```"]:
-        if content.startswith(marker):
-            content = content[len(marker):]
-    if content.endswith("```"):
-        content = content[:-3]
-    content = content.strip()
+    def _call_api(temp: float, extra_instruction: str = "") -> FirstGigOutput:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return strictly valid JSON only conforming to the requested schema. No markdown formatting, no commentary."},
+                {"role": "user", "content": prompt_instructions + extra_instruction}
+            ],
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": temp,
+                "num_predict": 1200,
+                "num_ctx": 2048
+            }
+        }
+        resp = requests.post(
+            f"{clean_host}/api/chat",
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=timeout
+        )
+        if resp.status_code == 404:
+            raise RuntimeError(f"Model '{model}' not found in Ollama. Run 'ollama pull {model}' to download it.")
+        if resp.status_code != 200:
+            raise RuntimeError(f"Ollama returned HTTP {resp.status_code}")
 
+        raw_content = resp.json().get("message", {}).get("content", "").strip()
+        cleaned_json = _clean_json_markdown(raw_content)
+
+        try:
+            parsed = json.loads(cleaned_json)
+        except json.JSONDecodeError as err:
+            logger.warning("Initial JSON decode error: %s. Attempting bracket recovery.", err)
+            fixed = cleaned_json
+            if '"' in fixed and fixed.count('"') % 2 != 0:
+                fixed += '"'
+            fixed += "}" * max(0, fixed.count("{") - fixed.count("}"))
+            parsed = json.loads(fixed)
+
+        result = FirstGigOutput(**parsed)
+        result.is_fallback = False
+        return result
+
+    # Attempt 1
     try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        fixed = content
-        if '"' in fixed and fixed.count('"') % 2 != 0:
-            fixed += '"'
-        fixed += "}" * max(0, fixed.count("{") - fixed.count("}"))
-        parsed = json.loads(fixed)
-
-    return FirstGigOutput(**parsed)
+        return _call_api(temp=temperature)
+    except Exception as first_err:
+        logger.warning("First inference attempt failed (%s). Retrying once with strict prompt...", first_err)
+        # Retry once with low temperature and explicit instruction
+        retry_extra = "\n\nCRITICAL RETRY: Ensure exactly 3 services, 3 pricing tiers, and strictly valid JSON syntax."
+        return _call_api(temp=0.1, extra_instruction=retry_extra)
 
 
 # ---------------------------------------------------------
-# Rate Calculator Helper
+# Rate Calculator Helper & Disclaimers
 # ---------------------------------------------------------
 RATE_TABLE = {
     "Beginner (Landing 1st gig)": {
@@ -344,21 +481,23 @@ RATE_TABLE = {
 }
 
 PLATFORM_FEE = {
-    "Upwork": 0.10,
-    "Fiverr": 0.20,
-    "Toptal": 0.00,
-    "LinkedIn / Direct": 0.00,
+    "Upwork (Flat 10% fee)": 0.10,
+    "Fiverr (Standard 20% seller fee)": 0.20,
+    "Toptal (Platform fee added to client bill)": 0.00,
+    "LinkedIn / Direct (0% platform fee)": 0.00,
 }
 
+
 def calculate_rates(exp_level: str, currency: str, platform: str) -> dict:
+    """Calculates gross and net freelance rates with platform fee deductions."""
     base = RATE_TABLE.get(exp_level, RATE_TABLE["Beginner (Landing 1st gig)"])
     rates = base.get(currency, base["USD ($)"])
-    fee = PLATFORM_FEE.get(platform, 0)
+    fee = max(0.0, min(1.0, PLATFORM_FEE.get(platform, 0.0)))
     sym = currency.split("(")[-1].replace(")", "").strip()
     result = {}
     for rate_type, (lo, hi) in rates.items():
-        net_lo = round(lo * (1 - fee))
-        net_hi = round(hi * (1 - fee))
+        net_lo = max(0, round(lo * (1 - fee)))
+        net_hi = max(0, round(hi * (1 - fee)))
         result[rate_type] = {
             "gross": f"{sym}{lo:,} – {sym}{hi:,}",
             "net": f"{sym}{net_lo:,} – {sym}{net_hi:,}",
@@ -371,7 +510,7 @@ def calculate_rates(exp_level: str, currency: str, platform: str) -> dict:
 # Platform Post Formatter
 # ---------------------------------------------------------
 def format_platform_post(data: FirstGigOutput, platform: str, tech_skills: str, niche: str) -> str:
-    primary = tech_skills.split(",")[0].strip()
+    primary = tech_skills.split(",")[0].strip() if tech_skills else "Specialist"
     service1 = data.services[0].title if data.services else f"{primary} services"
     price1 = data.pricing[0].price if data.pricing else "competitive rates"
 
@@ -386,30 +525,30 @@ I came across your job post and immediately saw the overlap with the work I spec
 **My approach for your project:**
 {data.proposal.proposed_solution}
 
-**Starting from:** {price1}
+**Starting scope:** {price1}
 
-I'd love to jump on a quick 15-minute call to understand your specific requirements and confirm fit before we begin.
+I would welcome a quick 15-minute conversation to clarify your exact requirements and ensure strong mutual alignment.
 
-**Next step:** Feel free to message me here on Upwork or click "Invite to Job" — I typically respond within 2 hours.
+**Next step:** Feel free to message me here on Upwork or click "Invite to Job" to discuss details.
 
-Looking forward to hearing from you!
+Looking forward to hearing from you,
 — {{YourName}}"""
 
     elif platform == "LinkedIn Post":
-        return f"""🚀 Open for freelance projects in {niche}!
+        return f"""🚀 Open for freelance engagements in {niche}!
 
-I help {niche.lower()} businesses {data.services[0].tagline.lower() if data.services else 'scale faster'}.
+I help {niche.lower()} businesses {data.services[0].tagline.lower() if data.services else 'streamline technical bottlenecks'}.
 
 ✅ {data.services[0].title if data.services else service1}
-✅ {data.services[1].title if len(data.services) > 1 else "Custom Workflow Automation"}
-✅ {data.services[2].title if len(data.services) > 2 else "Ongoing Retainer Support"}
+✅ {data.services[1].title if len(data.services) > 1 else "Custom Workflow Tooling"}
+✅ {data.services[2].title if len(data.services) > 2 else "Ongoing Technical Maintenance"}
 
 💡 {data.summary}
 
-📦 Engagements start at {price1}
+📦 Initial engagements start at {price1}
 ⏱️ Typical turnaround: {data.services[0].turnaround if data.services else "48-72 Hours"}
 
-If you know a team that could use this, drop a comment or DM me directly.
+If your team is tackling these bottlenecks or looking for fractional support, let's connect!
 
 #Freelance #OpenToWork #{primary.replace(' ', '')} #{niche.replace(' ', '').replace('&', '').replace('/', '')}"""
 
@@ -417,25 +556,23 @@ If you know a team that could use this, drop a comment or DM me directly.
         deliverables = ""
         if data.services:
             deliverables = "\n".join([f"✅ {d}" for d in data.services[0].deliverables])
-        return f"""🔥 **{data.services[0].title if data.services else service1}**
+        return f"""⚡ **{data.services[0].title if data.services else service1}**
 
-{data.services[0].tagline if data.services else "Professional delivery every time."}
+{data.services[0].tagline if data.services else "Dependable, high-quality technical implementation."}
 
 ---
 
-**What you'll get:**
+**Deliverables Included:**
 {deliverables}
 
-**Why buyers choose me:**
+**Why Work With Me:**
 {data.proposal.why_me}
 
 **Turnaround:** {data.services[0].turnaround if data.services else "48-72 Hours"}
 
 ---
 
-📌 **Message me before ordering** so I can confirm this gig is the right fit for your project.
-
-I respond within 1 hour during business hours."""
+📌 **Please message me before placing an order** so we can verify requirements and ensure this package meets your exact goals."""
 
     elif platform == "Cold Email":
         return f"""Subject: {data.outreach.subject_line}
@@ -444,7 +581,7 @@ I respond within 1 hour during business hours."""
 
 ---
 
-P.S. If you'd like to see examples of past work, I'm happy to share a quick portfolio — just reply to this email."""
+P.S. If helpful, I am glad to share a short portfolio overview or sample workflow breakdown for your team."""
 
     return ""
 
@@ -454,8 +591,10 @@ P.S. If you'd like to see examples of past work, I'm happy to share a quick port
 # ---------------------------------------------------------
 def convert_to_markdown(data: FirstGigOutput, tech_skills: str, soft_skills: str, niche: str) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    mode_badge = "⚠️ DEMO / SAMPLE BLUEPRINT (Deterministic Fallback)" if data.is_fallback else "⚡ LIVE AI BLUEPRINT (Local Inference)"
+
     md = f"""# FirstGig AI — Freelance Launch Blueprint
-*Generated on {now}*
+*{mode_badge} | Generated on {now}*
 
 ---
 
@@ -522,16 +661,38 @@ def convert_to_markdown(data: FirstGigOutput, tech_skills: str, soft_skills: str
 {data.proposal.call_to_action}
 
 ---
-*Generated with FirstGig AI (Hacktoberfest Week 2: Side Hustle)*
+*Note: Pricing and turnaround estimates are illustrative guidelines. Independent review of client scope and platform terms is recommended.*
 """
     return md
 
 
 # ---------------------------------------------------------
-# PDF Exporter
+# PDF Exporter (Safe Unicode & Margin Handling)
 # ---------------------------------------------------------
-def _safe(text: str) -> str:
-    """Strip non-latin1 characters for fpdf basic font."""
+def _sanitize_pdf_text(text: str) -> str:
+    """
+    Substitutes common Unicode typography with ASCII/Latin-1 safe equivalents,
+    preventing FPDF character rendering exceptions.
+    """
+    if not text:
+        return ""
+    replacements = {
+        "—": "--",
+        "–": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "•": "*",
+        "…": "...",
+        "₹": "INR ",
+        "€": "EUR ",
+        "£": "GBP ",
+        "™": "(TM)",
+        "©": "(c)",
+    }
+    for orig, rep in replacements.items():
+        text = text.replace(orig, rep)
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
@@ -543,19 +704,21 @@ def generate_pdf(data: FirstGigOutput, tech_skills: str, soft_skills: str, niche
 
     PAGE_W = 174  # A4 210mm minus 18mm left + 18mm right margins
 
-    # Title
+    # Title & Header
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(99, 102, 241)
-    pdf.cell(PAGE_W, 10, _safe("FirstGig AI  —  Freelance Blueprint"), ln=True, align="C")
+    pdf.cell(PAGE_W, 10, _sanitize_pdf_text("FirstGig AI  --  Freelance Blueprint"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(100, 116, 139)
-    pdf.cell(PAGE_W, 5, _safe(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}   |   Niche: {niche}"), ln=True, align="C")
+    mode_str = "SAMPLE DEMO BLUEPRINT" if data.is_fallback else "AI GENERATED"
+    pdf.cell(PAGE_W, 5, _sanitize_pdf_text(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  Mode: {mode_str}  |  Niche: {niche}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(4)
 
     def section_title(title: str):
         pdf.set_font("Helvetica", "B", 12)
         pdf.set_text_color(56, 189, 248)
-        pdf.cell(PAGE_W, 7, _safe(title), ln=True)
+        pdf.cell(PAGE_W, 7, _sanitize_pdf_text(title), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_draw_color(56, 189, 248)
         pdf.line(18, pdf.get_y(), 192, pdf.get_y())
         pdf.ln(3)
@@ -564,18 +727,18 @@ def generate_pdf(data: FirstGigOutput, tech_skills: str, soft_skills: str, niche
     def body_text(text: str):
         pdf.set_font("Helvetica", "", 9)
         pdf.set_text_color(50, 60, 80)
-        pdf.multi_cell(PAGE_W, 5, _safe(text))
+        pdf.multi_cell(PAGE_W, 5, _sanitize_pdf_text(text))
         pdf.ln(1)
 
     def label_value(label: str, value: str):
         pdf.set_font("Helvetica", "B", 9)
         pdf.set_text_color(71, 85, 105)
-        pdf.cell(35, 5, _safe(label + ":"))
+        pdf.cell(35, 5, _sanitize_pdf_text(label + ":"))
         pdf.set_font("Helvetica", "", 9)
         pdf.set_text_color(30, 41, 59)
-        pdf.multi_cell(PAGE_W - 35, 5, _safe(value))
+        pdf.multi_cell(PAGE_W - 35, 5, _sanitize_pdf_text(value))
 
-    # Profile
+    # Positioning Profile
     section_title("Positioning Profile")
     label_value("Tech Skills", tech_skills)
     label_value("Soft Skills", soft_skills)
@@ -588,28 +751,28 @@ def generate_pdf(data: FirstGigOutput, tech_skills: str, soft_skills: str, niche
     for i, s in enumerate(data.services, 1):
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(99, 102, 241)
-        pdf.cell(PAGE_W, 6, _safe(f"Service {i}: {s.title}"), ln=True)
+        pdf.cell(PAGE_W, 6, _sanitize_pdf_text(f"Service {i}: {s.title}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font("Helvetica", "I", 8)
         pdf.set_text_color(56, 189, 248)
-        pdf.multi_cell(PAGE_W, 4, _safe(f'"{s.tagline}"'))
+        pdf.multi_cell(PAGE_W, 4, _sanitize_pdf_text(f'"{s.tagline}"'))
         label_value("Ideal Client", s.target_client)
         label_value("Turnaround", s.turnaround)
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_text_color(71, 85, 105)
-        pdf.cell(PAGE_W, 4, "Deliverables:", ln=True)
+        pdf.cell(PAGE_W, 4, "Deliverables:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font("Helvetica", "", 8)
         pdf.set_text_color(30, 41, 59)
         for d in s.deliverables:
             pdf.set_x(pdf.l_margin + 4)
-            pdf.multi_cell(PAGE_W - 4, 4, _safe(f"* {d}"))
+            pdf.multi_cell(PAGE_W - 4, 4, _sanitize_pdf_text(f"* {d}"))
         pdf.ln(3)
 
     # Pricing
-    section_title("3-Tier Pricing Strategy")
+    section_title("3-Tier Pricing Strategy (Illustrative)")
     for p in data.pricing:
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(30, 41, 59)
-        pdf.cell(PAGE_W, 6, _safe(f"{p.tier_name}  —  {p.price}"), ln=True)
+        pdf.cell(PAGE_W, 6, _sanitize_pdf_text(f"{p.tier_name}  --  {p.price}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         label_value("Scope", p.scope)
         label_value("Ideal For", p.ideal_for)
         pdf.ln(2)
@@ -621,29 +784,29 @@ def generate_pdf(data: FirstGigOutput, tech_skills: str, soft_skills: str, niche
     pdf.ln(1)
     pdf.set_font("Helvetica", "B", 8)
     pdf.set_text_color(71, 85, 105)
-    pdf.cell(PAGE_W, 4, "Initial Message:", ln=True)
+    pdf.cell(PAGE_W, 4, "Initial Message:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     body_text(data.outreach.body)
     pdf.set_font("Helvetica", "B", 8)
     pdf.set_text_color(71, 85, 105)
-    pdf.cell(PAGE_W, 4, "3-Day Follow-Up:", ln=True)
+    pdf.cell(PAGE_W, 4, "Follow-Up Message:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     body_text(data.outreach.follow_up)
 
     # Proposal
     section_title("Freelance Proposal Template")
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_text_color(30, 41, 59)
-    pdf.multi_cell(PAGE_W, 6, _safe(data.proposal.headline))
+    pdf.multi_cell(PAGE_W, 6, _sanitize_pdf_text(data.proposal.headline))
     pdf.ln(1)
     label_value("Problem", data.proposal.problem_statement)
     label_value("Solution", data.proposal.proposed_solution)
     label_value("Why Me", data.proposal.why_me)
     label_value("CTA", data.proposal.call_to_action)
 
-    # Footer
-    pdf.ln(6)
+    # Footer Disclaimer
+    pdf.ln(4)
     pdf.set_font("Helvetica", "I", 7)
     pdf.set_text_color(148, 163, 184)
-    pdf.cell(PAGE_W, 4, "Generated with FirstGig AI  |  Hacktoberfest Week 2: Side Hustle", ln=True, align="C")
+    pdf.multi_cell(PAGE_W, 4, _sanitize_pdf_text("Disclaimer: Rates, deliverables, and outreach templates are sample guidelines. Always tailor proposals and verify platform agreements directly with clients."), align="C")
 
     buf = io.BytesIO()
     pdf.output(buf)
@@ -651,30 +814,30 @@ def generate_pdf(data: FirstGigOutput, tech_skills: str, soft_skills: str, niche
 
 
 # ---------------------------------------------------------
-# SIDEBAR
+# SIDEBAR: Engine & Presets
 # ---------------------------------------------------------
 with st.sidebar:
     st.markdown("### ⚡ AI Engine Configuration")
-    default_host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    ollama_host = st.text_input("Ollama Endpoint", value=default_host,
+    ollama_host = st.text_input("Ollama Endpoint", value=DEFAULT_OLLAMA_HOST,
                                 help="Local or remote Ollama server URL.")
     is_online, models_list, _ = check_ollama_status(ollama_host)
 
     if is_online:
         st.markdown('<div class="status-pill-online"><span class="pulse-dot"></span> Ollama Connected</div>', unsafe_allow_html=True)
-        sel_idx = models_list.index("gemma2:2b") if "gemma2:2b" in models_list else 0
-        selected_model = st.selectbox("Selected Model", options=models_list or ["gemma2:2b"], index=sel_idx)
+        preferred = DEFAULT_OLLAMA_MODEL
+        sel_idx = models_list.index(preferred) if preferred in models_list else 0
+        selected_model = st.selectbox("Selected Model", options=models_list or [preferred], index=sel_idx)
     else:
         st.markdown('<div class="status-pill-offline"><span class="pulse-dot"></span> Ollama Offline</div>', unsafe_allow_html=True)
-        selected_model = st.text_input("Model Name", value="gemma2:2b")
-        st.caption("ℹ️ Run `ollama run gemma2:2b` in your WSL terminal.\n*(Demo Mode auto-activates if offline)*")
+        selected_model = st.text_input("Model Name", value=DEFAULT_OLLAMA_MODEL)
+        st.caption("ℹ️ Local inference requires Ollama running on your machine.\n*(Demo Mode auto-activates when offline)*")
 
-    use_demo_mode = st.checkbox("Simulate / Demo Mode (No Ollama needed)", value=not is_online,
-                                help="Instant high-quality outputs without local inference.")
+    use_demo_mode = st.checkbox("Sample Demo Mode (Instant, No Ollama needed)", value=not is_online,
+                                help="Generate sample blueprints using deterministic templates.")
 
     st.markdown("---")
     st.markdown("### 🎛️ Generation Tuning")
-    temperature = st.slider("Creativity / Temperature", 0.1, 1.0, 0.5, 0.05)
+    temperature = st.slider("Creativity / Temperature", 0.1, 1.0, 0.4, 0.05)
 
     st.markdown("---")
     st.markdown("### 💡 Quick Skill Presets")
@@ -689,7 +852,7 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------
-# Preset Population
+# Preset Profiles
 # ---------------------------------------------------------
 PRESETS = {
     "Python Automation & Web Scraping": {
@@ -719,13 +882,13 @@ PRESETS = {
     }
 }
 
-default_tech  = "Python, Web Scraping, API Integration, Task Automation"
-default_soft  = "Clear communication, timely delivery, client empathy"
+default_tech = "Python, Web Scraping, API Integration, Task Automation"
+default_soft = "Clear communication, timely delivery, client empathy"
 default_niche = "B2B E-Commerce & Retail Brands"
 
 if preset in PRESETS:
-    default_tech  = PRESETS[preset]["tech"]
-    default_soft  = PRESETS[preset]["soft"]
+    default_tech = PRESETS[preset]["tech"]
+    default_soft = PRESETS[preset]["soft"]
     default_niche = PRESETS[preset]["niche"]
 
 
@@ -736,8 +899,8 @@ st.markdown(
     """<div class="hero-container">
         <div class="hero-title">⚡ FirstGig AI</div>
         <p class="hero-subtitle">
-            Transform your technical and soft skills into 3 profitable micro-services, starter pricing,
-            battle-tested cold outreach, and client-winning freelance proposals — powered by Gemma 2 2B running locally.
+            Transform technical and soft skills into 3 realistic micro-services, starter pricing,
+            targeted cold outreach, and structured freelance proposals — optimized for local inference with Gemma 2 2B.
         </p>
     </div>""",
     unsafe_allow_html=True
@@ -748,13 +911,13 @@ st.markdown(
 # ---------------------------------------------------------
 col1, col2 = st.columns(2)
 with col1:
-    tech_skills = st.text_area("🛠️ Technical Skills & Tools", value=default_tech, height=100,
-                               help="Languages, frameworks, tools you know.")
-    niche = st.text_input("🎯 Target Industry / Niche", value=default_niche,
-                          help="e.g. E-commerce Brands, Local Dentists, B2B SaaS")
+    raw_tech_skills = st.text_area("🛠️ Technical Skills & Tools", value=default_tech, height=100,
+                                   help="Languages, frameworks, tools you know (max 500 characters).")
+    raw_niche = st.text_input("🎯 Target Industry / Niche", value=default_niche,
+                              help="e.g. E-commerce Brands, Local Dentists, B2B SaaS (max 500 characters).")
 with col2:
-    soft_skills = st.text_area("🤝 Soft Skills & Strengths", value=default_soft, height=100,
-                               help="Communication, speed, reliability, domain expertise.")
+    raw_soft_skills = st.text_area("🤝 Soft Skills & Strengths", value=default_soft, height=100,
+                                   help="Communication, speed, reliability, domain expertise (max 500 characters).")
     c1, c2 = st.columns(2)
     with c1:
         exp_level = st.selectbox("📈 Experience Level",
@@ -762,52 +925,87 @@ with col2:
     with c2:
         currency = st.selectbox("💵 Pricing Currency", ["USD ($)", "EUR (€)", "INR (₹)", "GBP (£)"])
 
+# Sanitize inputs
+tech_skills = sanitize_input(raw_tech_skills)
+soft_skills = sanitize_input(raw_soft_skills)
+niche = sanitize_input(raw_niche)
+
 generate_btn = st.button("🚀 Generate FirstGig Blueprint", type="primary", use_container_width=True)
 
 # ---------------------------------------------------------
-# SESSION STATE
+# SESSION STATE MANAGEMENT
 # ---------------------------------------------------------
-for key in ["blueprint_data", "blueprint_markdown"]:
-    if key not in st.session_state:
-        st.session_state[key] = None
+if "blueprint_data" not in st.session_state:
+    st.session_state.blueprint_data = None
+if "blueprint_markdown" not in st.session_state:
+    st.session_state.blueprint_markdown = None
+if "blueprint_inputs" not in st.session_state:
+    st.session_state.blueprint_inputs = None
 
 # ---------------------------------------------------------
-# GENERATION
+# GENERATION LOGIC
 # ---------------------------------------------------------
 if generate_btn:
-    if not tech_skills.strip() or not niche.strip():
-        st.error("Please fill in your technical skills and target niche before generating.")
+    if not tech_skills or not niche:
+        st.error("Please enter both technical skills and a target niche before generating.")
     else:
-        with st.spinner("🧠 Gemma 2 2B is generating your blueprint (CPU inference ~30-60s)..."):
+        with st.spinner("🧠 Generating your freelance blueprint..."):
             t0 = time.time()
             try:
                 if use_demo_mode or not is_online:
-                    time.sleep(0.8)
+                    time.sleep(0.5)
                     result_data = generate_fallback_data(tech_skills, soft_skills, niche, currency)
-                    if not is_online:
-                        st.info("ℹ️ Generated via Instant Fallback Engine (Ollama offline).")
                 else:
                     result_data = query_ollama_for_firstgig(
-                        ollama_host, selected_model, tech_skills, soft_skills,
-                        niche, exp_level, currency, temperature
+                        host=ollama_host,
+                        model=selected_model,
+                        tech_skills=tech_skills,
+                        soft_skills=soft_skills,
+                        niche=niche,
+                        exp_level=exp_level,
+                        currency=currency,
+                        temperature=temperature
                     )
                 st.session_state.blueprint_data = result_data
                 st.session_state.blueprint_markdown = convert_to_markdown(result_data, tech_skills, soft_skills, niche)
-                st.success(f"✨ Blueprint generated in {round(time.time()-t0, 2)}s!")
+                st.session_state.blueprint_inputs = {
+                    "tech": tech_skills,
+                    "soft": soft_skills,
+                    "niche": niche,
+                    "currency": currency,
+                    "exp": exp_level
+                }
+                elapsed = round(time.time() - t0, 2)
+                st.success(f"✨ Blueprint ready in {elapsed}s!")
             except Exception as ex:
-                st.warning(f"Ollama error: {ex}. Falling back to structured generator.")
+                logger.error("Inference failure: %s", ex, exc_info=True)
+                st.warning("⚠️ Local Ollama inference encountered an issue. Loaded verified sample demo blueprint.")
                 result_data = generate_fallback_data(tech_skills, soft_skills, niche, currency)
                 st.session_state.blueprint_data = result_data
                 st.session_state.blueprint_markdown = convert_to_markdown(result_data, tech_skills, soft_skills, niche)
+                st.session_state.blueprint_inputs = {
+                    "tech": tech_skills,
+                    "soft": soft_skills,
+                    "niche": niche,
+                    "currency": currency,
+                    "exp": exp_level
+                }
 
 # ---------------------------------------------------------
-# RESULTS
+# RESULTS DISPLAY
 # ---------------------------------------------------------
 data: Optional[FirstGigOutput] = st.session_state.blueprint_data
 
 if data:
     st.markdown("---")
-    st.info(f"💡 **Strategic Positioning:** {data.summary}")
+
+    # Banner distinguishing live inference from demo fallback
+    if data.is_fallback:
+        st.info("ℹ️ **Sample Demo Blueprint**: These results are generated via verified deterministic templates for demonstration. Connect a local Ollama instance running Gemma 2 2B for personalized AI inference.")
+    else:
+        st.success("⚡ **AI-Generated Blueprint**: Personalized results produced via local Gemma 2 2B inference.")
+
+    st.markdown(f"💡 **Strategic Positioning:** {safe_html(data.summary)}", unsafe_allow_html=True)
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🛠️ 3 Micro-Services",
@@ -825,17 +1023,17 @@ if data:
         st.caption("Package your skills into specific, scoped offers rather than generic hourly labor.")
         cols = st.columns(3)
         for idx, service in enumerate(data.services):
-            deliverables_html = "".join([f"<li style='margin-bottom:4px'>{d}</li>" for d in service.deliverables])
+            deliverables_html = "".join([f"<li style='margin-bottom:4px'>{safe_html(d)}</li>" for d in service.deliverables])
             card_html = (
                 f'<div class="service-card">'
                 f'<span class="card-badge">Service {idx + 1}</span>'
-                f'<h4 style="margin:8px 0;color:#f1f5f9">{service.title}</h4>'
-                f'<p style="color:#38bdf8;font-size:0.9rem;font-style:italic;margin-bottom:10px">"{service.tagline}"</p>'
-                f'<p style="font-size:0.85rem;color:#cbd5e1"><b>Ideal Client:</b> {service.target_client}</p>'
+                f'<h4 style="margin:8px 0;color:#f1f5f9">{safe_html(service.title)}</h4>'
+                f'<p style="color:#38bdf8;font-size:0.9rem;font-style:italic;margin-bottom:10px">"{safe_html(service.tagline)}"</p>'
+                f'<p style="font-size:0.85rem;color:#cbd5e1"><b>Ideal Client:</b> {safe_html(service.target_client)}</p>'
                 f'<p style="font-size:0.85rem;color:#cbd5e1;margin-bottom:4px"><b>Deliverables:</b></p>'
                 f'<ul style="font-size:0.82rem;color:#94a3b8;padding-left:18px;margin-bottom:12px">{deliverables_html}</ul>'
                 f'<div style="font-size:0.8rem;background:rgba(15,23,42,0.7);padding:8px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);color:#f1f5f9">'
-                f'⏱️ <b>Turnaround:</b> <span style="color:#34d399;font-weight:600">{service.turnaround}</span>'
+                f'⏱️ <b>Turnaround:</b> <span style="color:#34d399;font-weight:600">{safe_html(service.turnaround)}</span>'
                 f'</div></div>'
             )
             with cols[idx]:
@@ -844,7 +1042,7 @@ if data:
     # ── Tab 2: Pricing Strategy ──
     with tab2:
         st.markdown("### 💰 Recommended 3-Tier Pricing Model")
-        st.caption("Use a tiered ladder to give clients choice and anchor value perception.")
+        st.caption("Illustrative starter pricing structure to anchor value perception and offer options.")
         pcols = st.columns(3)
         tier_styles = [
             ("rgba(15,23,42,0.9)", "1px solid rgba(99,102,241,0.2)", ""),
@@ -852,24 +1050,26 @@ if data:
             ("rgba(15,23,42,0.9)", "1px solid rgba(99,102,241,0.2)", ""),
         ]
         for i, (tier, (bg, border, extra)) in enumerate(zip(data.pricing, tier_styles)):
-            badge = '<span class="card-badge" style="background:rgba(129,140,248,0.25);color:#a5b4fc">⭐ Most Popular</span><br>' if i == 1 else ''
-            html = (
+            badge = '<span class="card-badge" style="background:rgba(129,140,248,0.25);color:#a5b4fc">⭐ Recommended</span><br>' if i == 1 else ''
+            html_content = (
                 f'<div style="background:{bg};border:{border};border-radius:14px;padding:22px;text-align:center;{extra}">'
                 f'{badge}'
-                f'<h3 style="color:#f8fafc;margin:8px 0 4px">{tier.tier_name}</h3>'
-                f'<div style="font-size:1.8rem;font-weight:800;color:#38bdf8;margin:10px 0">{tier.price}</div>'
-                f'<p style="color:#cbd5e1;font-size:0.9rem;margin-bottom:14px">{tier.scope}</p>'
+                f'<h3 style="color:#f8fafc;margin:8px 0 4px">{safe_html(tier.tier_name)}</h3>'
+                f'<div style="font-size:1.8rem;font-weight:800;color:#38bdf8;margin:10px 0">{safe_html(tier.price)}</div>'
+                f'<p style="color:#cbd5e1;font-size:0.9rem;margin-bottom:14px">{safe_html(tier.scope)}</p>'
                 f'<hr style="border:0;border-top:1px solid rgba(255,255,255,0.1);margin:10px 0">'
-                f'<p style="font-size:0.82rem;color:#94a3b8"><b>Target Buyer:</b><br>{tier.ideal_for}</p>'
+                f'<p style="font-size:0.82rem;color:#94a3b8"><b>Target Buyer:</b><br>{safe_html(tier.ideal_for)}</p>'
                 f'</div>'
             )
             with pcols[i]:
-                st.markdown(html, unsafe_allow_html=True)
+                st.markdown(html_content, unsafe_allow_html=True)
+
+        st.caption("⚠️ **Pricing Disclaimer:** Price ranges are illustrative estimates based on typical market brackets. Actual rates depend on scope complexity, client geography, urgency, and individual negotiations.")
 
     # ── Tab 3: Rate Calculator ──
     with tab3:
         st.markdown("### 📊 Platform-Specific Rate Calculator")
-        st.caption("See your realistic market rates per platform after fees are deducted.")
+        st.caption("Estimate gross and net earnings after typical platform fee deductions.")
         rc1, rc2 = st.columns(2)
         with rc1:
             calc_platform = st.selectbox("Choose Platform", list(PLATFORM_FEE.keys()), key="calc_plat")
@@ -881,65 +1081,69 @@ if data:
         fee_pct = int(PLATFORM_FEE[calc_platform] * 100)
 
         if fee_pct > 0:
-            st.warning(f"⚠️ **{calc_platform}** charges a **{fee_pct}% service fee**. Net rates shown below reflect your actual take-home.")
+            st.warning(f"⚠️ **{safe_html(calc_platform)}**: Approx. {fee_pct}% service deduction. Net rates reflect estimated take-home before local taxes.")
         else:
-            st.success(f"✅ **{calc_platform}** charges **no platform fee** — you keep 100% of your earnings.")
+            st.success(f"✅ **{safe_html(calc_platform)}**: No platform-level deduction. Payment processing or subscription fees may still apply.")
 
         r1, r2, r3 = st.columns(3)
-        labels = {"hourly": ("⏱️ Hourly Rate", "Per hour billed"), "project": ("📦 Project Rate", "Fixed-scope deliverable"), "monthly": ("📅 Monthly Retainer", "Ongoing engagement")}
+        labels = {
+            "hourly": ("⏱️ Hourly Rate", "Estimated per hour"),
+            "project": ("📦 Project Rate", "Fixed-scope milestone"),
+            "monthly": ("📅 Monthly Retainer", "Ongoing engagement")
+        }
         for col, (rate_key, (title, subtitle)) in zip([r1, r2, r3], labels.items()):
             if rate_key in rates:
                 r = rates[rate_key]
                 with col:
                     st.markdown(
                         f'<div class="rate-card">'
-                        f'<div class="rate-label">{title}</div>'
-                        f'<div class="rate-value">{r["net"]}</div>'
-                        f'<div style="font-size:0.75rem;color:#64748b">Gross: {r["gross"]}<br>Platform cut: {r["platform_cut"]}</div>'
-                        f'<div style="font-size:0.72rem;color:#475569;margin-top:6px">{subtitle}</div>'
+                        f'<div class="rate-label">{safe_html(title)}</div>'
+                        f'<div class="rate-value">{safe_html(r["net"])}</div>'
+                        f'<div style="font-size:0.75rem;color:#64748b">Gross: {safe_html(r["gross"])}<br>Platform cut: {safe_html(r["platform_cut"])}</div>'
+                        f'<div style="font-size:0.72rem;color:#475569;margin-top:6px">{safe_html(subtitle)}</div>'
                         f'</div>',
                         unsafe_allow_html=True
                     )
 
         st.markdown("---")
-        st.markdown("#### 💡 Pricing Strategy Tip")
+        st.markdown("#### 💡 Platform Strategy Notes")
         tips = {
-            "Upwork": "Start with a slightly lower rate to earn your first 5 reviews, then raise by 20-30% after reaching Job Success Score 90%+.",
-            "Fiverr": "Use 3 Gig packages. The middle package should be the obvious best value. Upsell extras like rush delivery (+50% of base).",
-            "Toptal": "Toptal clients expect senior-level rates. Never discount — position as a premium specialist.",
-            "LinkedIn / Direct": "No platform fees means you can offer 10% off compared to platform rates and still earn more.",
+            "Upwork (Flat 10% fee)": "Upwork charges a 10% freelancer service fee. Focus proposals on specific problem comprehension and include concrete milestone roadmaps.",
+            "Fiverr (Standard 20% seller fee)": "Fiverr retains a 20% fee. Tier your gig into 3 clear packages where the middle tier represents the most compelling scope.",
+            "Toptal (Platform fee added to client bill)": "Toptal bills the client a markup over your agreed net hourly rate. Position as a vetted specialist.",
+            "LinkedIn / Direct (0% platform fee)": "Direct billing avoids marketplace fees, though standard merchant payment processing (e.g. Stripe ~2.9% + $0.30) still applies.",
         }
-        st.info(tips.get(calc_platform, "Price based on value delivered, not hours worked."))
+        st.info(tips.get(calc_platform, "Deliver measurable business outcomes rather than selling raw hours."))
 
     # ── Tab 4: Cold Outreach ──
     with tab4:
         st.markdown("### 📨 Cold Outreach Playbook")
-        st.caption("Personalized, low-pressure outreach scripts ready to copy and send.")
-        st.markdown(f"**Channel:** `{data.outreach.channel}`")
-        st.markdown(f"**Subject Line:** `{data.outreach.subject_line}`")
-        st.markdown("#### Initial Pitch Message:")
+        st.caption("Personalized, value-first outreach scripts ready to review and adapt.")
+        st.markdown(f"**Channel:** `{safe_html(data.outreach.channel)}`", unsafe_allow_html=True)
+        st.markdown(f"**Subject Line:** `{safe_html(data.outreach.subject_line)}`", unsafe_allow_html=True)
+        st.markdown("#### Initial Outreach Message:")
         st.code(data.outreach.body, language="text")
-        st.markdown("#### 3-Day Polite Follow-Up:")
+        st.markdown("#### Polite Follow-Up (After 3 Business Days):")
         st.code(data.outreach.follow_up, language="text")
 
     # ── Tab 5: Proposal ──
     with tab5:
-        st.markdown("### 📝 Ready-to-Send Freelance Proposal")
-        st.caption("Copy into Upwork, Fiverr, or paste into client email discussions.")
+        st.markdown("### 📝 Structured Client Proposal")
+        st.caption("Adapt this proposal outline for Upwork, freelance platforms, or client email bids.")
         st.subheader(data.proposal.headline)
-        with st.expander("1. Understanding Your Problem (Empathy)", expanded=True):
+        with st.expander("1. Understanding the Problem (Empathy & Context)", expanded=True):
             st.write(data.proposal.problem_statement)
         with st.expander("2. Proposed Solution & Milestone Roadmap", expanded=True):
             st.write(data.proposal.proposed_solution)
         with st.expander("3. Why Choose Me?", expanded=True):
             st.write(data.proposal.why_me)
-        with st.expander("4. Low-Friction Next Steps (CTA)", expanded=True):
+        with st.expander("4. Recommended Next Step (Call to Action)", expanded=True):
             st.write(data.proposal.call_to_action)
 
     # ── Tab 6: Platform Posts ──
     with tab6:
         st.markdown("### 🔗 Platform-Specific Post Formatter")
-        st.caption("One-click conversion of your blueprint into ready-to-paste posts for each platform.")
+        st.caption("Directly formatted copy for freelance bids, gig listings, and social outreach.")
 
         platform_choice = st.radio(
             "Choose output format:",
@@ -956,10 +1160,10 @@ if data:
             "Cold Email": "badge-email",
         }
         st.markdown(
-            f'<span class="platform-badge {badge_map.get(platform_choice, "")}">{platform_choice}</span>',
+            f'<span class="platform-badge {safe_html(badge_map.get(platform_choice, ""))}">{safe_html(platform_choice)}</span>',
             unsafe_allow_html=True
         )
-        st.text_area("📋 Copy this content:", value=post_content, height=380, key="platform_post_output")
+        st.text_area("📋 Copy ready text:", value=post_content, height=350, key="platform_post_output")
         st.download_button(
             f"⬇️ Download {platform_choice} (.txt)",
             data=post_content,
@@ -971,7 +1175,7 @@ if data:
     # ── Tab 7: Export ──
     with tab7:
         st.markdown("### 📄 Export Your Blueprint")
-        st.caption("Download in Markdown or a formatted PDF report.")
+        st.caption("Download the complete blueprint in Markdown or formatted PDF format.")
 
         e1, e2, e3 = st.columns(3)
 
@@ -995,11 +1199,15 @@ if data:
             )
 
         with e3:
-            if st.button("💾 Save .md to Project Folder", use_container_width=True):
+            if st.button("💾 Save .md to Project Directory", use_container_width=True):
                 save_path = os.path.join(os.getcwd(), "FirstGig_Blueprint.md")
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write(st.session_state.blueprint_markdown)
-                st.success(f"Saved to `{save_path}`!")
+                try:
+                    with open(save_path, "w", encoding="utf-8") as f:
+                        f.write(st.session_state.blueprint_markdown)
+                    st.success(f"Saved to `{save_path}`!")
+                except Exception as err:
+                    logger.error("Failed to save blueprint: %s", err)
+                    st.error("Failed to save file locally.")
 
-        st.markdown("#### Preview:")
-        st.text_area("Raw Markdown Content", value=st.session_state.blueprint_markdown, height=300)
+        st.markdown("#### Preview Raw Markdown:")
+        st.text_area("Markdown Preview", value=st.session_state.blueprint_markdown, height=300)

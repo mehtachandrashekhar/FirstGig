@@ -1,0 +1,27 @@
+# Git & GitHub
+.git
+.gitignore
+.github
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated artifacts & local docs
+FirstGig_Blueprint*.md
+FirstGig_Blueprint*.pdf
+test_output.pdf
+*.log
+
+# Docker & local secrets
+.env*
+docker-compose*.yml
