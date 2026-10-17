@@ -34,13 +34,23 @@ def test_sanitize_pdf_text_replaces_unicode_safely():
     assert "GBP" in sanitized
 
 
+def test_sanitize_pdf_text_empty_and_none():
+    assert _sanitize_pdf_text("") == ""
+    assert _sanitize_pdf_text(None) == ""
+
+
 def test_pdf_export_succeeds_with_unicode_and_long_text():
+    # Long text exceeding typical page boundaries to test multi_cell wrapping
+    long_desc = "Highly detailed description text. " * 30
+
     data = generate_fallback_data(
         tech_skills="Python 3.11, PyTorch, LangChain — Advanced AI / ML",
         soft_skills="Clear communication & proactive updates",
         niche="Healthcare “MedTech” & Clinical Research",
         currency="INR (₹)"
     )
+    data.services[0].deliverables.append(long_desc)
+    data.proposal.problem_statement = long_desc
 
     pdf_bytes = generate_pdf(
         data=data,

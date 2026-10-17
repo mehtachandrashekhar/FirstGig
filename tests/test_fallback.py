@@ -37,3 +37,18 @@ def test_fallback_data_has_no_arbitrary_guarantees():
     assert "guaranteed 4-hour emergency response sla" not in all_text
     assert "save 10+ hours per week" not in all_text
     assert "7-day guarantee" not in all_text
+    assert "guaranteed earnings" not in all_text
+    assert "guaranteed clients" not in all_text
+
+
+def test_fallback_turnaround_times_are_qualified_estimates():
+    data = generate_fallback_data(
+        tech_skills="Python, Django",
+        soft_skills="Transparency",
+        niche="Healthcare",
+        currency="USD ($)"
+    )
+
+    for service in data.services:
+        # Every turnaround must be labeled as an estimate or agreed per scope/contract
+        assert "estimated" in service.turnaround.lower() or "agreed" in service.turnaround.lower()

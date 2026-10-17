@@ -124,7 +124,7 @@ class MicroService(BaseModel):
     tagline: str = Field(min_length=5, max_length=250, description="One-line pitch focused on client ROI")
     target_client: str = Field(min_length=5, max_length=250, description="Specific ideal client persona who has money to spend")
     deliverables: List[str] = Field(min_length=2, description="Concrete bullet deliverables")
-    turnaround: str = Field(min_length=2, max_length=50, description="Estimated turnaround time")
+    turnaround: str = Field(min_length=2, max_length=80, description="Estimated turnaround time")
 
     @field_validator("title", "tagline", "target_client", "turnaround")
     @classmethod
@@ -247,19 +247,19 @@ def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, curre
         services=[
             MicroService(
                 title=f"{primary} Health Audit & Rapid Implementation",
-                tagline="Identify technical debt and implement immediate high-priority fixes within 48-72 hours.",
+                tagline="Audit workflow health and implement scoped high-priority fixes (estimated 2-3 business days pending scope).",
                 target_client=f"Founders, operators, and engineering leads in {niche} needing focused technical support.",
                 deliverables=[
                     "Comprehensive workflow/codebase audit report detailing top vulnerabilities & bottlenecks",
                     "Implementation of up to 3 prioritized fixes, refactors, or automation scripts",
                     "Clear video walkthrough explaining all changes and technical decisions",
-                    "7-day post-handoff support window for questions and minor adjustments"
+                    "Optional 7-day post-handoff support window for questions and minor adjustments (agreed per contract)"
                 ],
-                turnaround="48 - 72 Hours"
+                turnaround="Estimated 2 - 3 business days (scope dependent)"
             ),
             MicroService(
                 title=f"Custom {niche} Workflow Automation Pipeline",
-                tagline="Eliminate repetitive manual data entry and streamline team operations with custom tooling.",
+                tagline="Streamline repetitive manual tasks and integrate core tools into an automated pipeline.",
                 target_client=f"Growing {niche} teams managing fragmented tools and repetitive manual processes.",
                 deliverables=[
                     "Custom integration script or lightweight automation tool connecting your daily workflows",
@@ -267,19 +267,19 @@ def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, curre
                     "Standard Operating Procedure (SOP) documentation for seamless team adoption",
                     "Handover walk-through session to review operation and maintenance"
                 ],
-                turnaround="4 - 5 Days"
+                turnaround="Estimated 4 - 5 business days (scope dependent)"
             ),
             MicroService(
-                title="Continuous Maintenance & Technical Retainer",
-                tagline="Dedicated ongoing support, preventive maintenance, and steady feature improvements.",
+                title="Continuous Technical Support & Maintenance Retainer",
+                tagline="Fractional ongoing support, routine preventive maintenance, and steady technical improvements.",
                 target_client=f"Established teams in {niche} seeking a dependable fractional technical partner.",
                 deliverables=[
                     "Bi-weekly system health checks, dependency updates, and preventive maintenance",
-                    "Priority bug resolution during standard business hours",
-                    "Continuous feature enhancements (up to 10 hours/month)",
+                    "Technical support and issue resolution during standard business hours (terms agreed with client)",
+                    "Continuous feature enhancements (up to agreed monthly hours allotment)",
                     "Monthly status summary covering completed tasks and upcoming recommendations"
                 ],
-                turnaround="Monthly Ongoing"
+                turnaround="Monthly retainer (estimated hours agreed per contract)"
             )
         ],
         pricing=[
@@ -328,7 +328,7 @@ def generate_fallback_data(tech_skills: str, soft_skills: str, niche: str, curre
                 "Phase 1: Discovery & Requirements Lock (Day 1)\n"
                 "Phase 2: Core Development & Modular Testing (Days 2-3)\n"
                 "Phase 3: Integration, Client Review & Revisions (Day 4)\n"
-                "Phase 4: Handoff, Documentation Walkthrough & 7-Day Support Window (Day 5)"
+                "Phase 4: Handoff, Documentation Walkthrough & Optional Post-Handoff Review Window (Target: Day 5, pending client feedback)"
             ),
             why_me=(
                 f"I combine technical precision in {tech_skills} with strong {soft_skills}. "
@@ -546,7 +546,7 @@ I help {niche.lower()} businesses {data.services[0].tagline.lower() if data.serv
 💡 {data.summary}
 
 📦 Initial engagements start at {price1}
-⏱️ Typical turnaround: {data.services[0].turnaround if data.services else "48-72 Hours"}
+⏱️ Estimated turnaround: {data.services[0].turnaround if data.services else "Estimated 2-3 business days"}
 
 If your team is tackling these bottlenecks or looking for fractional support, let's connect!
 
@@ -568,7 +568,7 @@ If your team is tackling these bottlenecks or looking for fractional support, le
 **Why Work With Me:**
 {data.proposal.why_me}
 
-**Turnaround:** {data.services[0].turnaround if data.services else "48-72 Hours"}
+**Estimated Turnaround:** {data.services[0].turnaround if data.services else "Estimated 2-3 business days (dependent on scope)"}
 
 ---
 
@@ -1005,7 +1005,7 @@ if data:
     else:
         st.success("⚡ **AI-Generated Blueprint**: Personalized results produced via local Gemma 2 2B inference.")
 
-    st.markdown(f"💡 **Strategic Positioning:** {safe_html(data.summary)}", unsafe_allow_html=True)
+    st.info(f"💡 **Strategic Positioning:** {data.summary}")
 
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🛠️ 3 Micro-Services",
@@ -1119,8 +1119,8 @@ if data:
     with tab4:
         st.markdown("### 📨 Cold Outreach Playbook")
         st.caption("Personalized, value-first outreach scripts ready to review and adapt.")
-        st.markdown(f"**Channel:** `{safe_html(data.outreach.channel)}`", unsafe_allow_html=True)
-        st.markdown(f"**Subject Line:** `{safe_html(data.outreach.subject_line)}`", unsafe_allow_html=True)
+        st.markdown(f"**Channel:** `{data.outreach.channel}`")
+        st.markdown(f"**Subject Line:** `{data.outreach.subject_line}`")
         st.markdown("#### Initial Outreach Message:")
         st.code(data.outreach.body, language="text")
         st.markdown("#### Polite Follow-Up (After 3 Business Days):")

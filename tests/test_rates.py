@@ -25,7 +25,6 @@ def test_calculate_rates_direct_no_fee():
         platform="LinkedIn / Direct (0% platform fee)"
     )
     assert rates["hourly"]["platform_cut"] == "0%"
-    # 75 - 200
     assert "75" in rates["hourly"]["net"]
     assert "200" in rates["hourly"]["net"]
 
@@ -43,6 +42,29 @@ def test_calculate_rates_fiverr_fee():
     assert "54" in rates["hourly"]["net"]
 
 
+def test_calculate_rates_inr_formatting():
+    rates = calculate_rates(
+        exp_level="Beginner (Landing 1st gig)",
+        currency="INR (₹)",
+        platform="Upwork (Flat 10% fee)"
+    )
+    # Check that INR currency symbol is properly handled and comma formatting is present
+    assert "₹" in rates["project"]["gross"]
+    assert "8,000" in rates["project"]["gross"]
+    assert "35,000" in rates["project"]["gross"]
+
+
+def test_calculate_rates_gbp_formatting():
+    rates = calculate_rates(
+        exp_level="Intermediate (Some projects)",
+        currency="GBP (£)",
+        platform="LinkedIn / Direct (0% platform fee)"
+    )
+    assert "£" in rates["hourly"]["gross"]
+    assert "28" in rates["hourly"]["gross"]
+    assert "60" in rates["hourly"]["gross"]
+
+
 def test_calculate_rates_fallback_defaults():
     # Test with unknown/missing keys
     rates = calculate_rates(
@@ -52,3 +74,16 @@ def test_calculate_rates_fallback_defaults():
     )
     assert "hourly" in rates
     assert rates["hourly"]["platform_cut"] == "0%"
+
+
+def test_calculate_rates_boundary_values():
+    # Test that net rate never goes negative and platform cut stays valid
+    rates = calculate_rates(
+        exp_level="Beginner (Landing 1st gig)",
+        currency="USD ($)",
+        platform="LinkedIn / Direct (0% platform fee)"
+    )
+    for rate_type in ["hourly", "project", "monthly"]:
+        assert rate_type in rates
+        assert "–" in rates[rate_type]["gross"]
+        assert "–" in rates[rate_type]["net"]

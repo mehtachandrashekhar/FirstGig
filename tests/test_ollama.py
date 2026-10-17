@@ -11,24 +11,24 @@ SAMPLE_OLLAMA_RESPONSE = {
     "services": [
         {
             "title": "Financial Pipeline Audit",
-            "tagline": "Audit and streamline reporting scripts within 48 hours",
+            "tagline": "Audit and streamline reporting scripts within estimated 2-3 business days",
             "target_client": "Fintech teams with manual reporting overhead",
             "deliverables": ["Code review report", "Automated SQL extract", "Setup guide"],
-            "turnaround": "48 Hours"
+            "turnaround": "Estimated 2-3 business days"
         },
         {
             "title": "Automated Reconciliation Pipeline",
             "tagline": "Connect banking feeds to internal ledgers smoothly",
             "target_client": "Growing accounting and finance operators",
             "deliverables": ["Reconciliation script", "Error notification webhook", "Team documentation"],
-            "turnaround": "4 Days"
+            "turnaround": "Estimated 4 business days"
         },
         {
             "title": "Quarterly Data Maintenance Retainer",
             "tagline": "Dependable fractional engineering support for routine reporting",
             "target_client": "Established CFO offices seeking outsourced maintenance",
             "deliverables": ["Monthly health audit", "Priority bug resolution", "System updates"],
-            "turnaround": "Monthly Ongoing"
+            "turnaround": "Monthly ongoing (scope agreed)"
         }
     ],
     "pricing": [
@@ -107,7 +107,7 @@ def test_query_ollama_retry_success():
     good_resp.status_code = 200
     good_resp.json.return_value = {"message": {"content": json.dumps(SAMPLE_OLLAMA_RESPONSE)}}
 
-    with patch("requests.post", side_effect=[bad_resp, good_resp]):
+    with patch("requests.post", side_effect=[bad_resp, good_resp]) as mock_post:
         result = query_ollama_for_firstgig(
             host="http://localhost:11434",
             model="gemma2:2b",
@@ -119,6 +119,61 @@ def test_query_ollama_retry_success():
         )
         assert isinstance(result, FirstGigOutput)
         assert len(result.services) == 3
+        # Exactly 2 calls made (1 initial + 1 retry)
+        assert mock_post.call_count == 2
+
+
+def test_query_ollama_retry_limit_exhausted():
+    # Both initial call and retry fail with invalid JSON
+    bad_resp = MagicMock()
+    bad_resp.status_code = 200
+    bad_resp.json.return_value = {"message": {"content": "NOT VALID JSON"}}
+
+    with patch("requests.post", side_effect=[bad_resp, bad_resp]) as mock_post:
+        with pytest.raises(Exception):
+            query_ollama_for_firstgig(
+                host="http://localhost:11434",
+                model="gemma2:2b",
+                tech_skills="Python",
+                soft_skills="Speed",
+                niche="SaaS",
+                exp_level="Beginner",
+                currency="USD ($)"
+            )
+        # Exactly 2 attempts (initial + 1 retry)
+        assert mock_post.call_count == 2
+
+
+def test_query_ollama_timeout():
+    # Tests that Timeout error triggers retry, then raises on persistent timeout
+    with patch("requests.post", side_effect=requests.exceptions.Timeout("Read timeout")) as mock_post:
+        with pytest.raises(requests.exceptions.Timeout):
+            query_ollama_for_firstgig(
+                host="http://localhost:11434",
+                model="gemma2:2b",
+                tech_skills="Python",
+                soft_skills="Speed",
+                niche="SaaS",
+                exp_level="Beginner",
+                currency="USD ($)"
+            )
+        assert mock_post.call_count == 2
+
+
+def test_query_ollama_connection_error():
+    # Tests that ConnectionError triggers retry, then raises
+    with patch("requests.post", side_effect=requests.exceptions.ConnectionError("Refused")) as mock_post:
+        with pytest.raises(requests.exceptions.ConnectionError):
+            query_ollama_for_firstgig(
+                host="http://localhost:11434",
+                model="gemma2:2b",
+                tech_skills="Python",
+                soft_skills="Speed",
+                niche="SaaS",
+                exp_level="Beginner",
+                currency="USD ($)"
+            )
+        assert mock_post.call_count == 2
 
 
 def test_query_ollama_model_not_found():
